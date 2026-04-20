@@ -1,1 +1,3 @@
 .envflask
+.venv
+__pycache__
