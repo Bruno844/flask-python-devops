@@ -35,7 +35,7 @@ def saludo(nombre):
 
 
 #ENDPOINT PARA LA PETICION -GET- QUE RETORNA TODAS LAS TAREAS
-@app.route("/tareas", methods=["GET"])
+@app.get("/tareas")
 def get_tarea():
    return jsonify(tareas),200
 
