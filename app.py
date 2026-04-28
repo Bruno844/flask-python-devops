@@ -1,19 +1,40 @@
 #practica de flask para el its
+import os
 from flask import Flask, jsonify, request
+from flask_sqlalchemy import SQLAlchemy
 
+
+# --- SOLUCIÓN AL ERROR DE UNICODE ---
+# Forzamos a que el cliente de Postgres use UTF-8 antes de inicializar algo
+os.environ['PGCLIENTENCODING'] = 'utf-8'
 
 app = Flask(__name__)
 
 #jsonify es para retornar un json como respuesta
 
-tareas = [
- {"id": 1, "titulo": "Leer sobre APIs", "completada": False},
- {"id": 2, "titulo": "Probar Postman", "completada": True},
- {"id": 3, "titulo": "test tarea 3", "completada": False},
- {"id": 4, "titulo": "test tarea 4", "completada": True},
- {"id": 5, "titulo": "test tarea 5", "completada": False},
- {"id": 6, "titulo": "test tarea 6", "completada": True}
-]
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql+psycopg2://postgres:root@localhost:5432/tareadb?client_encoding=utf8'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
+
+#definicion del modelo (la tabla en postgres)
+class Tarea(db.Model):
+    __tablename__ = 'tareas'
+    id = db.Column(db.Integer, primary_key=True)
+    titulo = db.Column(db.String(100), nullable=False) #que no puede haber datos faltantes o nulos
+    completada = db.Column(db.Boolean, default=False)
+
+    def to_dict(self):
+        return {"id": self.id, "titulo": self.titulo, "completada": self.completada}
+    
+
+#creamos las tablas en la base de datos(se ejecuta una sola vez,ya que identifica si esta creada, lo ejecuta una vez, pero si ya esta, no hace nada)
+with app.app_context():
+    try:
+        db.create_all()
+        print("¡Conexión exitosa y tablas creadas!")
+    except Exception as e:
+        print(f"Error al conectar: {e}")
 
 
 #ENDPOINT PARA LA RUTA INICIAL. METODO GET QUE ENVIA UN SALUDO
@@ -21,7 +42,7 @@ tareas = [
 def inicio():
     return jsonify({
         "mensaje": "hola mundo desde flask",
-        "descripcion": "esta es una api minima"
+        "descripcion": "conexion a la db exitosa"
     })
 
 
@@ -37,80 +58,92 @@ def saludo(nombre):
 #ENDPOINT PARA LA PETICION -GET- QUE RETORNA TODAS LAS TAREAS
 @app.get("/tareas")
 def get_tarea():
-   return jsonify(tareas),200
+    tareas = Tarea.query.all()
+    if not tareas:
+      return jsonify({"mensaje": "no hay tareas"})
+    return jsonify([t.to_dict() for t in tareas]), 200
 
 
 
+#ENDPOINT PARA LA CREACION DE TAREAS
 @app.post("/crear-tarea")
 def crear_tarea():
-    #con esta variable, capturamos lo que nos manda el usuario por el body en formato json
-    datos = request.get_json()
-
+  
     try:
-
-        #si manda la peticion y no hay datos, que lance un error
-        if not datos:
-            return jsonify({"error": "debe enviar un json en el body"}), 404
-        if "titulo" not in datos:
-            return jsonify({"error": "no envio los datos necesarios"}), 404
-        #creamos la nueva tarea asignandole un nuevo id
-        nuevo_id = tareas[-1]["id"] + 1 if tareas else 1
-        #aca concatenamos el nuevo id con los datos que nos pasen por el body
-        nueva_tarea = {"id": nuevo_id, "titulo": datos["titulo"], "completada": datos.get("completada", False)}
-        #por defecto obtenemos el campo completada en false, no es necesario colocarlo en la peticion
-
-        #agregamos al array de tareas, la nueva tarea con el metodo .append    
-        tareas.append(nueva_tarea)
+        #capturamos los datos del usuario por el body
+        datos = request.get_json() 
+        if not datos or "titulo" not in datos:
+            return jsonify({"error": "falta el campo 'titulo'"}), 400
         
-        #y aca retornamos con jsonify la nueva tarea y con codigo 201 que salio con exito 
-        return jsonify(nueva_tarea), 201 
-        
-    #aca con except capturamos cualquier fuga o error que haya salido de la peticion y la mostramos con un mensaje    
+        #creamos nueva instancia del modelo para la creacion de un nuevo registro
+        nueva_tarea = Tarea(
+            titulo = datos["titulo"],
+            completada = datos.get("completada", False)
+        )
+
+        #guardamos en base de datos
+        db.session.add(nueva_tarea)
+        db.session.commit()
+
+        return jsonify(nueva_tarea.to_dict()), 201
+
     except Exception as e:
-        return jsonify(f"error en la peticion:", e)
+       return jsonify({"error": f"error en la peticion: {e} "})
 
 
 #endpoint para buscar una tarea por id, que se le pasa por parametros identificando al id
 @app.get("/tareas/<int:id>")
 def buscar_tarea(id):
-    #recorremos el arreglo de tareas
-    for tarea in tareas:
-        #consultamos si el id que esta en el array, es igual al que buscamos por parametro
-        if tarea["id"] == id:
-            return jsonify(tarea), 200
-    return jsonify({"error": f"no se encontro esa tarea con id {id}", })
+    #buscamos por id
+    tarea = Tarea.query.get(id) #ese es el metodo para la busqueda de un elemento por su id
+    if tarea:
+        return jsonify(tarea.to_dict()), 200
+    return jsonify({"error": f"no se encuentra esa tarea con id {id}"}), 404
 
 #endpoint -DELETE- para eliminar una tarea por su id
 @app.delete("/eliminar-tarea/<int:id>")
 def eliminar_tarea(id):
-    #recorremos el array de tareas
-    for tarea in tareas:
-        #si coincide el id que ponemos por parametros con el que esta en el array, lo elimina de la lista
-        if tarea["id"] == id:
-            #metodo pop elimina por parametro que le pasemos
-            tareas.remove(tarea)
-            #retornamos un mensaje que fue una ejecucion con exito
-            return jsonify(f"tarea con id {id} eliminado"), 200
-    #retornamos un jsonify en caso que falle la peticion
-    return jsonify({"error": "no se elimino ya que ese id no existe"}), 404
+    try:
+        #buscamos por el id del parametro
+        tarea_id = Tarea.query.get(id)
+        #consultamos si no existe ese id, tire error
+        if not tarea_id:    
+            return jsonify({"error": f"no se encuentra ese id {id} para eliminar"})
+        
+        #si lo encuentra, que lo elimine
+        db.session.delete(tarea_id)
+        #hacemos el commit contra la db
+        db.session.commit()
+
+        return jsonify({"ok": "se elimino con exito"}), 200
+
+    except Exception as e:
+        return jsonify({"error": f"no se pudo eliminar o algo: {e} "})
 
 
 
 #endpoint -PUT- para actualizar una tarea buscando por su id
 @app.put("/tarea/<int:id>")
 def actualizar_tarea(id):
-   #el metodo next sirve para poder convertir una lista en un iterador y solo recorrer ese elemento que coincida con la condicion que le pongamos, sin la necesidad de recorrerlos todos como lo hace el bucle fot, de esa manera se ahorra muchos procesos y tiempo de rendimiento
-   tarea = next((t for t in tareas if t["id"] == id), {"error": "no existe tarea con ese id"})
-   if not tarea:
-    return jsonify({"error": "no hay tarea"}), 404
-   
-   #aca capturamos lo que el usuario nos escribo en el body
-   data = request.json
-   #actualizamos la lista de tareas con la data nueva
-   tarea.update(data)
-   #retornamos un json
-   return jsonify(tarea), 200
+    try:
+        tarea = Tarea.query.get(id)
+        if not tarea:
+            return jsonify({"error": "no existe tarea con ese id"})
 
+        datos = request.get_json()
+
+        #actualizamos los campos si vienen del json, y si algun campo no sufre cambios, mantenemos los mismos que estaban
+        tarea.titulo = datos.get("titulo", tarea.titulo)
+        tarea.completa = datos.get("completada", tarea.completada)
+
+        #guardamos los cambios
+        db.session.commit()
+
+        return jsonify(tarea.to_dict()),200
+    
+
+    except Exception as e:
+        return jsonify({"error": f"error a la hora de eliminar: {e}"})
 
 if __name__ == "__main__":
     app.run(debug=True)
